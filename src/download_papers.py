@@ -27,13 +27,15 @@ def get_last_name(name):
   else:
     return ""
 
+# Extracts text from pdf; also attempts to extract author affiliations from
+# the text blocks containing the authors' names.
 def text_from_pdf(pdf_path, authors):
   extracted_text = ""
   affiliations = dict()
   author_lastnames = set()
   author_lastname_pattern = ""
   for author in authors:
-    lastname = get_last_name(author)
+    lastname = get_last_name(author[1])
     print("Lastname:", lastname)
     author_lastnames.add(lastname)
     author_lastname_pattern += lastname + "\s*,?\s*|"
@@ -57,7 +59,7 @@ def text_from_pdf(pdf_path, authors):
     layout = device.get_result()
     for lt_obj in layout:
       if isinstance(lt_obj, LTTextBox) or isinstance(lt_obj, LTTextLine):
-        tmp_text = re.sub("\\\\", "", lt_obj.get_text())
+        tmp_text = re.sub("[^A-Za-z0-9 ,\s\.@]", "", lt_obj.get_text())
         author_count = 0
         for lastname in author_lastnames:
           if re.search(lastname, tmp_text): author_count += 1
@@ -73,7 +75,7 @@ def text_from_pdf(pdf_path, authors):
                   affiliations[lastname] = affiliation_block.group(author_count + 1)
                 else:
                   affiliations[lastname] = tmp_text
-        extracted_text += tmp_text
+        extracted_text += tmp_text + "\n"
     infp.close()
     device.close()
     if os.path.exists("working/temp"):
@@ -90,9 +92,10 @@ def text_from_pdf(pdf_path, authors):
 # only separated by commas and whitespace, they will all be given the affiliation of the last
 # author.
 def get_author_affiliations(title, author_list, paper_text):
-  whitespaced_title = re.sub("\s", "\\s*", title)
-  whitespaced_title = re.sub("-", ".*", whitespaced_title)
-  print("Title: ", whitespaced_title)
+  print("Title: ", title)
+  title_pattern = re.sub("\s", "\\s*", title)
+  title_pattern = re.sub("-|\+", ".?", title_pattern)
+  print("Title Pattern: ", title_pattern)
   affiliations = dict()
   print(author_list)
   if not author_list:
@@ -102,23 +105,23 @@ def get_author_affiliations(title, author_list, paper_text):
   re_flags = re.IGNORECASE | re.DOTALL
   print("Text: ", paper_text[0:300])
   aff_str = ""
-  author_aff_block = re.search(whitespaced_title + "\s*(.*)\s*abstract", paper_text, re_flags)
+  author_aff_block = re.search(title_pattern + "\s*(.*)\s*abstract", paper_text, re_flags)
   if author_aff_block:
     aff_str = author_aff_block.group(1)
   else:
-    author_aff_block = re.search(whitespaced_title + "\s*(.*)", paper_text, re_flags)
+    author_aff_block = re.search(title_pattern + "\s*(.*)", paper_text, re_flags)
   if author_aff_block:
     aff_str = author_aff_block.group(1)[0:300]
   else:
     for author in author_list:
-      author_lastname = get_last_name(author)
+      author_lastname = get_last_name(author[1])
       affiliations[author_lastname] = ""
     return affiliations
   print("Affiliation Block: ", aff_str)
   affiliation = ""
   terminator_pattern = "$"
   for author in reversed(author_list):
-    author_lastname = get_last_name(author)
+    author_lastname = get_last_name(author[1])
     print("Last Name: ", author_lastname)
     re_pattern = author_lastname + ",?\s*(.*)\s*" + terminator_pattern
     print("Pattern: ", re_pattern)
@@ -129,7 +132,7 @@ def get_author_affiliations(title, author_list, paper_text):
       affiliation = temp_aff_block.group(1)
       affiliations[author_lastname] = affiliation
     print("Affiliation: ", affiliation)
-    terminator_pattern = re.sub("-", ".?", "[" + author + "|" + author_lastname + "]")
+    terminator_pattern = re.sub("-", ".?", "[" + author[1] + "|" + author_lastname + "]")
     terminator_pattern = re.sub("\\\\", "", terminator_pattern)
 
   return affiliations
@@ -137,7 +140,7 @@ def get_author_affiliations(title, author_list, paper_text):
 base_url  = "http://papers.nips.cc"
 
 index_urls = {1987: "https://papers.nips.cc/book/neural-information-processing-systems-1987"}
-for i in range(1, 5):
+for i in range(1, 30):
   year = i+1987
   index_urls[year] = "http://papers.nips.cc/book/advances-in-neural-information-processing-systems-%d-%d" % (i, year)
 
@@ -165,6 +168,8 @@ for year in sorted(index_urls.keys()):
 
   temp_path = os.path.join("working", "temp.txt")
 
+  bad_paper_ids = ("2646", "3677", "4281", "4418", "5820")
+
   for link in paper_links:
     paper_title = link.contents[0]
     info_link = base_url + link["href"]
@@ -174,6 +179,7 @@ for year in sorted(index_urls.keys()):
     pdf_name = link["href"][7:] + ".pdf"
     pdf_path = os.path.join("working", "pdfs", str(year), pdf_name)
     paper_id = re.findall(r"^(\d+)-", pdf_name)[0]
+    if paper_id in bad_paper_ids: continue  # These papers break things.
     print(year, " ", paper_id) #paper_title.encode('ascii', 'namereplace'))
     if not os.path.exists(pdf_path):
       pdf = requests.get(pdf_link)
@@ -206,13 +212,17 @@ for year in sorted(index_urls.keys()):
         print("PDF MISSING")
         continue
 
-    bibtex = requests.get(bibtex_link)
-    bibtex_author_block = re.search("author = {(.*)}", bibtex.content.decode("utf-8")).group(1)
-    print("BAB: ", bibtex_author_block)
-    bibtex_authors = re.split("\s+and\s+", bibtex_author_block)
+    try:
+      paper_text, alpha_affiliations = text_from_pdf(pdf_path, authors)
+    except:
+      print("Could not extract paper text from PDF %s" %
+            paper_title.encode("ascii", "replace"))
 
-    paper_text, alpha_affiliations = text_from_pdf(pdf_path, bibtex_authors)
-    beta_affiliations = get_author_affiliations(paper_title, bibtex_authors, paper_text)
+    try:
+      beta_affiliations = get_author_affiliations(paper_title, authors, paper_text)
+    except:
+      print("Could not extract author affiliations from text %s" %
+            paper_title.encode("ascii", "replace"))
 
     for author in authors:
       alpha_affiliation = ""
