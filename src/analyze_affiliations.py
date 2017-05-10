@@ -1,5 +1,5 @@
+import csv
 import os
-import pandas as pd
 import re
 
 # We are going to represent the affiliation of an author as a bitmap.
@@ -18,11 +18,12 @@ academia_cnt_by_year = dict()
 industry_cnt_by_year = dict()
 unknown_cnt_by_year = dict()
 total_author_cnt_by_year = dict()
-with open("output/paper_authors.csv", "r") as paper_fp:
-  for line in paper_fp:
+with open("output/paper_authors.csv", "r") as table_fp:
+  table_reader = csv.reader(table_fp, delimiter=',', quotechar='"')
+  for line in table_reader:
     print("Line: ", line)
     line_id, year, paper_id, title, citation_cnt, author_id, author_name,\
-        a_affiliation, b_affiliation, abstract = re.split(",", line)
+        a_affiliation, b_affiliation, abstract = line
     if line_id == "id": continue
     print("Line Id:", line_id, " year: ", year, " Paper Id: ", paper_id)
     if not year in total_author_cnt_by_year:
@@ -64,7 +65,7 @@ with open("output/paper_authors.csv", "r") as paper_fp:
 
 academic_percentages = list()
 industry_percentages = list()
-for year, total_author_cnt in total_author_cnt_by_year:
+for year, total_author_cnt in total_author_cnt_by_year.items():
   academia_cnt = academia_cnt_by_year[year]
   industry_cnt = industry_cnt_by_year[year]
   unknown_cnt = unknown_cnt_by_year[year]
