@@ -11,7 +11,6 @@ import os
 import pandas as pd
 import re
 import requests
-import subprocess
 import sys
 
 # Extracts last name from "First_Name Middle_Name Last_Name" or "Last_Name, First_Name".
@@ -59,7 +58,7 @@ def text_from_pdf(pdf_path, authors):
     layout = device.get_result()
     for lt_obj in layout:
       if isinstance(lt_obj, LTTextBox) or isinstance(lt_obj, LTTextLine):
-        tmp_text = re.sub("[^A-Za-z0-9 ,\s\.@]", "", lt_obj.get_text())
+        tmp_text = re.sub("[^A-Za-z0-9 \s\.@]", "", lt_obj.get_text())
         author_count = 0
         for lastname in author_lastnames:
           if re.search(lastname, tmp_text): author_count += 1
@@ -72,9 +71,9 @@ def text_from_pdf(pdf_path, authors):
             for lastname in author_lastnames:
               if (not lastname in affiliations) and re.search(lastname, tmp_text):
                 if (len(affiliation_block.groups()) > author_count):
-                  affiliations[lastname] = affiliation_block.group(author_count + 1)
+                  affiliations[lastname] = re.sub("\s+", " ", affiliation_block.group(author_count + 1))
                 else:
-                  affiliations[lastname] = tmp_text
+                  affiliations[lastname] = re.sub("\s+", " ", tmp_text)
         extracted_text += tmp_text + "\n"
     infp.close()
     device.close()
@@ -103,7 +102,6 @@ def get_author_affiliations(title, author_list, paper_text):
   # Find the block of text between the title and the work "Abstract".
   # This should contain the authors + their affiliations.
   re_flags = re.IGNORECASE | re.DOTALL
-  print("Text: ", paper_text[0:300])
   aff_str = ""
   author_aff_block = re.search(title_pattern + "\s*(.*)\s*abstract", paper_text, re_flags)
   if author_aff_block:
@@ -129,7 +127,7 @@ def get_author_affiliations(title, author_list, paper_text):
     if not temp_aff_block:
       temp_aff_block = re.search(author_lastname + ",?\s*(.*)\s*$", aff_str, re_flags)
     if temp_aff_block:
-      affiliation = temp_aff_block.group(1)
+      affiliation = re.sub("\s+", " ", temp_aff_block.group(1))
       affiliations[author_lastname] = affiliation
     print("Affiliation: ", affiliation)
     terminator_pattern = re.sub("-", ".?", "[" + author[1] + "|" + author_lastname + "]")
@@ -137,7 +135,8 @@ def get_author_affiliations(title, author_list, paper_text):
 
   return affiliations
 
-base_url  = "http://papers.nips.cc"
+base_url = "http://papers.nips.cc"
+base_scholar_url = "https://scholar.google.com/scholar?q=NIPS"
 
 index_urls = {1987: "https://papers.nips.cc/book/neural-information-processing-systems-1987"}
 for i in range(1, 30):
@@ -173,8 +172,6 @@ for year in sorted(index_urls.keys()):
   for link in paper_links:
     paper_title = link.contents[0]
     info_link = base_url + link["href"]
-    bibtex_link = info_link + "/bibtex"
-    print("Info link: ", info_link, "; BibTeX link: ", bibtex_link)
     pdf_link = info_link + ".pdf"
     pdf_name = link["href"][7:] + ".pdf"
     pdf_path = os.path.join("working", "pdfs", str(year), pdf_name)
@@ -212,6 +209,25 @@ for year in sorted(index_urls.keys()):
         print("PDF MISSING")
         continue
 
+    cite_cnt = 0
+# The block of code commented out below is intended to scrape citation counts from
+# Google Scholar.  Unfortunately, it fails due to robot blocking. Can we find a
+# workaround?
+
+#    scholar_link = base_scholar_url + "+" + re.sub("\s+","\+", paper_title)
+#    for author in authors:
+#      scholar_link += "+" + get_last_name(author[1])
+#    scholar_data = requests.get(scholar_link)
+#    scholar_soup = BeautifulSoup(scholar_data.content, "lxml")
+#    for tag in scholar_soup.find_all('a'):
+#      if tag.get('href').startswith('/scholar?cites'):
+#        if hasattr(tag, 'string') and tag.string.startswith('Cited by'):
+#          cite_cnt = int(tag.string.split()[-1])
+#      break
+#    print("Citation count: ", cite_cnt)
+
+    alpha_affiliations = dict()
+    beta_affiliations = dict()
     try:
       paper_text, alpha_affiliations = text_from_pdf(pdf_path, authors)
     except:
@@ -228,26 +244,19 @@ for year in sorted(index_urls.keys()):
       alpha_affiliation = ""
       beta_affiliation = ""
       author_lastname = get_last_name(author[1])
-      nips_authors.add(author)
       if author_lastname in alpha_affiliations:
         alpha_affiliation = alpha_affiliations[author_lastname]
       if author_lastname in beta_affiliations:
         beta_affiliation = beta_affiliations[author_lastname]
-      paper_authors.append([len(paper_authors)+1, paper_id, author[0], alpha_affiliation, beta_affiliation])
+      paper_authors.append([len(paper_authors)+1, year, paper_id, paper_title, cite_cnt,
+                            author[0], author[1],
+                            alpha_affiliation, beta_affiliation, abstract])
       print("Author num: ", author[0], ", Author name: ", author[1])
-      event_types = [h.contents[0][23:] for h in paper_soup.find_all('h3') if h.contents[0][:22]=="Conference Event Type:"]
-      if len(event_types) != 1:
-        #print(event_types)
-        #print([h.contents for h in paper_soup.find_all('h3')].__str__().encode("ascii", "replace"))
-        #raise Exception("Bad Event Data")
-        event_type = ""
-      else:
-        event_type = event_types[0]
-      papers.append([paper_id, year, paper_title, event_type, pdf_name, abstract, paper_text])
 
 if not os.path.exists("output"):
   os.makedirs("output")
 
-pd.DataFrame(list(nips_authors), columns=["id","name"]).sort_values(by="id").to_csv("output/authors.csv", index=False)
-pd.DataFrame(papers, columns=["id", "year", "title", "event_type", "pdf_name", "abstract", "paper_text"]).sort_values(by="id").to_csv("output/papers.csv", index=False)
-pd.DataFrame(paper_authors, columns=["id", "paper_id", "author_id", "a_affiliation", "b_affiliation"]).sort_values(by="id").to_csv("output/paper_authors.csv", index=False)
+pd.DataFrame(paper_authors,
+             columns=["id", "year", "paper_id", "title", "citations", "author_id", "author_name",
+                      "a_affiliation", "b_affiliation", "abstract"])\
+  .sort_values(by="id").to_csv("output/paper_authors.csv", index=False)
